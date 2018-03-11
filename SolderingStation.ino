@@ -13,6 +13,7 @@
 #include <string.h>
 #include <avr/io.h>
 #include <avr/interrupt.h>
+//#include <EEPROM.h>
 
 
 /*----------CONFIG----------*/
@@ -23,6 +24,12 @@ U8G2_SH1106_128X64_NONAME_F_4W_HW_SPI u8g2(U8G2_R0, 10, 9, 8);
 #define R2_RESISTANCE 270
 
 /*--------------------------*/
+
+#define STOP_TIMER1 TCCR1B &= ~(1 << CS11)      // Prescaler 1/8
+#define START_TIMER1 TCCR1B |= (1 << CS11)
+
+#define START_TIMER2 TCCR2B |= _BV(CS22)
+#define STOP_TIMER2 TCCR2B &= ~_BV(CS22)      // Prescaler 1/8
 
 /*--------GPIO PORTS--------*/
 #define GPIO_ZEROCROSSING PD2   //D2
@@ -49,6 +56,9 @@ uint16_t ironIdleTempInC = 180;
 /*-------TEMP----------*/
 uint16_t latestIronTemp = 0;
 int16_t zeroCrossing = 0;
+double Kp = 80.0;
+char KpCompensation = 0;
+bool tempIsStable = false;
 
 
 float runningAverage(float M) {
@@ -70,7 +80,7 @@ float runningAverage(float M) {
 }
 
 float median(float M) {
-    const uint8_t LENGTH = 3;
+    const uint8_t LENGTH = 5;
     static uint8_t index = 0;
     static int values[LENGTH];
     
@@ -116,7 +126,6 @@ uint16_t getIronTempToC()
 uint16_t getTargetTempToC(uint16_t maxTemp = 400)
 {
  uint16_t tempC = 0;
-
  const char tempStep = 5;
  
  if (ironIsIdle)
@@ -127,7 +136,27 @@ uint16_t getTargetTempToC(uint16_t maxTemp = 400)
   return tempC;
 }
 
-void updateScreen(int16_t tipTemp, int16_t targetTemp)
+void updateScreen(char* desc, int16_t temp)
+{
+  char buf[10]; 
+  snprintf(buf, 10, "%d%c%c", temp, '°', 'C');
+  
+  
+  u8g2.clearBuffer();                         // Clear the internal memory
+  u8g2.enableUTF8Print();
+  u8g2.setFont(u8g2_font_mercutio_sc_nbp_tf); // Choose a suitable font
+  
+  u8g2.drawStr((128 - u8g2.getStrWidth(desc)) / 2, 10, desc);
+
+
+  
+  u8g2.setFont(u8g2_font_logisoso38_tf);     // Choose a suitable font
+  u8g2.drawStr((128 - u8g2.getStrWidth(buf))/2, 60, buf);
+  
+  u8g2.sendBuffer();                          // Transfer internal memory to the display
+}
+
+/*void updateScreenIs(int16_t tipTemp, int16_t targetTemp)
 {
   char buf[2][5];
   snprintf (buf[0], 5, "%d", tipTemp);
@@ -143,12 +172,46 @@ void updateScreen(int16_t tipTemp, int16_t targetTemp)
   
   u8g2.setFont(u8g2_font_logisoso28_tr   );     // Choose a suitable font
   u8g2.drawStr(0, 60, buf[0]);
-  //u8g2.drawStr((128 - u8g2.getStrWidth(buf[0]))/2, 60, buf[0]);
   u8g2.drawStr(128 - u8g2.getStrWidth(buf[1]), 60, buf[1]);
   
-  //u8g2.drawBox(0,64-5,128,5);
-  
   u8g2.sendBuffer();                          // Transfer internal memory to the display
+}
+*/
+
+void timer1_Start(){
+  //want to start/ restart the timer here
+  TCNT1 = 0;                // Clear the timer
+  TCCR1B |= _BV(CS11) | _BV(CS10);    // prescaler=64 16 MHz clock
+  TCCR1B |= (1 << WGM12);
+}
+
+void timer2_Start(){
+  //want to start/ restart the timer here
+  TCNT2 = 0;                // Clear the timer
+  TCCR2B |= _BV(CS22);    // prescaler=64 16 MHz clock
+  TCCR2A |= (1 << WGM21);
+}
+
+void TIMER1_Init()
+{ 
+  TCCR1A = 0;
+  TCCR1B = 0;
+  TCCR1A |= (1 << COM1A1);
+  TCCR1B |= (1 << WGM12);
+  OCR1A = 15350;              // COMPA at 20/16ths microseconds
+  TCNT1 = 0;                // Clear the timer
+  TIMSK1 |= (1 << OCIE1A);  // enable timer compare interrupt channel A:
+}
+
+void TIMER2_Init()
+{ 
+  TCCR2A = 0;
+  TCCR2B = 0;
+  TCCR2A |= (1 << COM2A1);
+  TCCR2A |= (1 << WGM21);
+  OCR2A = 150;               // 0.4ms (halv of 0.8ms zero-crossing time)
+  TCNT2 = 0;                // Clear the timer
+  TIMSK2 |= (1 << OCIE2A);  // enable timer compare interrupt channel A:  
 }
 
 void ADC_Init(void)
@@ -175,19 +238,6 @@ void INT_Init(void)
   PCMSK1 |= (1 << PCINT11);
 }
 
-/* Iron idle counter */
-void TIMER1_Init()
-{ 
-  TCCR1A = 0;
-  TCCR1B = 0;
-  TCCR1A |= (1 << COM1A1);             
-  TCCR1B |= (1 << WGM12);                   //Waveform compare clear
-  TCCR1B |= (1 << CS11);      // Prescaler 1/8
-  TCNT0  = 0;
-  OCR1A = 15000 - 1; // 100Hz
-  TIMSK1 |= (1 << OCIE1A);
-}
-
 
 
 ISR(ADC_vect) // ADC Interrupt enable
@@ -211,83 +261,53 @@ ISR(ADC_vect) // ADC Interrupt enable
   }
 }
 
-#define STOP_TIMER1 TCCR1B &= ~(1 << CS11);      // Prescaler 1/8
-#define START_TIMER1 TCCR1B |= (1 << CS11)
 
-double Kp = 30.0;
+
 
 /* Zero crossing interrupt */
-ISR(INT0_vect) //Zero crossing interrupt, On change
-{
-  //Serial.println(latestIronTemp);
-  if (PIND & (1 << GPIO_ZEROCROSSING)) // Rising edge
-  {
-    if (zeroCrossing <= 0)
-    {
-      if (zeroCrossing <= -1)
-      {
-        latestIronTemp = getIronTempToC();
-        double nextMeasurement = ((getTargetTempToC() - latestIronTemp)/(getTargetTempToC() + latestIronTemp)) * Kp;
-        zeroCrossing = nextMeasurement;
-        
-      }
-      else
-        PORTD &= ~(1 << GPIO_HEAT);
-    }
-    zeroCrossing--;
-  }
-  else //Falling edge
-  {
-    if (zeroCrossing  > 0)
-    {
-      if (latestIronTemp < getTargetTempToC())
-      {
-        PORTD |= (1 << GPIO_HEAT);
-      }
-      else
-      {
-        PORTD &= ~(1 << GPIO_HEAT);
-      }
-    }
-  }
-}
-
-/* Zero crossing interrupt */
-/*
 ISR(INT0_vect) //Zero crossing interrupt, On change
 {
   //Serial.println(latestIronTemp);
   if (PIND & (1 << GPIO_ZEROCROSSING))
   {
-    if (zeroCrossing <= 0)
-    {
+    if (zeroCrossing <= 0) {
       PORTD &= ~(1 << GPIO_HEAT);
       START_TIMER1;
     }
-    else
-    {
+    else {
       if (latestIronTemp < getTargetTempToC())
       {
         PORTD |= (1 << GPIO_HEAT);
-      }
-      else
-      {
-        PORTD &= ~(1 << GPIO_HEAT);
-      }
+        //START_TIMER2;   
+      } 
     }
     zeroCrossing--;
   }
-}*/
+}
 
-/* Iron idle counter interrupt */
+
+/* Zero crossing timer */
+ISR(TIMER2_COMPA_vect)
+{
+  PORTD |= (1 << GPIO_HEAT);
+  STOP_TIMER2;
+}
+
+
+
+
+
+
+/* Temp-measurement timer */
 ISR(TIMER1_COMPA_vect)
 {
   latestIronTemp = getIronTempToC();
-  double difference = ceil(sqrt(double(getTargetTempToC()) - double(latestIronTemp)) * Kp);
-  zeroCrossing = difference;
+  double nextMeasurement = ((double(getTargetTempToC() + KpCompensation) - double(latestIronTemp))/(double(getTargetTempToC()) + double(latestIronTemp))) * Kp;
+  zeroCrossing = floor(nextMeasurement);
+
   STOP_TIMER1;
- 
 }
+
 
 /* Iron stand change interrupt */
 ISR(PCINT1_vect) //Iron stand sensor interrupt, On change
@@ -323,35 +343,61 @@ void setup() {
   cli();
   ADC_Init();
   INT_Init();
+
   TIMER1_Init();
+  TIMER2_Init();
+  
   DDRD |= (1 << GPIO_HEAT);
   
   Serial.begin(115200);
   u8g2.begin();
 
-  for (int i = 0; i < 20; i++)
+  for (int i = 0; i < 5; i++)
     getIronTempToC();
   
   sei();
 
 }
 
+
+
 void loop() {
+  static unsigned long screenSetCooldown = 0;
   static uint16_t lastTipTemp = 0, lastTargetTemp = 0;
   uint16_t tipTemp = latestIronTemp, targetTemp = getTargetTempToC();
+  static bool updateSet, lastUpdateSet = false;
 
-
+  if (targetTemp != lastTargetTemp)
+  {
+    screenSetCooldown = millis();
+  }
   
+  if (millis() - screenSetCooldown >= 1000) {
+    updateSet = false;
+  }
+  else {
+    updateSet = true;
+  }
   
-  if (abs(tipTemp - lastTipTemp) > 0 || abs(targetTemp - lastTargetTemp > 0))
+  (abs(tipTemp - targetTemp) < 5) ? tempIsStable = true : tempIsStable = false;
+  
+  tipTemp = ((tipTemp+5)/5) * 5;
+  
+  if (abs(tipTemp - lastTipTemp) > 0 || abs(targetTemp - lastTargetTemp > 0) || updateSet != lastUpdateSet)
   {
     noInterrupts();
-    updateScreen(tipTemp, targetTemp);
+    if (updateSet)
+    {
+      updateScreen("Set", targetTemp);
+      lastUpdateSet = updateSet;
+    }
+    else
+    {
+      updateScreen("Iron Temp", tipTemp);
+    }
+    
     lastTipTemp = tipTemp;
     lastTargetTemp = targetTemp;
     interrupts();
   }
-  //Serial.println(zeroCrossing);
-  //delay(50);
-
 }
