@@ -152,46 +152,53 @@ uint16_t getIronTempToC()
 
 uint16_t getTargetTempToC(uint16_t maxTemp = 400)
 {
-	uint16_t temp =  map(rawPotADC, 0, 1023, 0, floor(maxTemp / tempStep)) * tempStep;
+	uint16_t temp =  map(rawPotADC, 0, 1020, 0, floor(maxTemp / tempStep)) * tempStep;
 	return temp;
 }
 
+/*
 void updateScreen(char* desc, int16_t temp)
 {
-  char buf[10]; 
-  snprintf(buf, 10, "%d%c%c", temp, '°', 'C');
+	char buf[10]; 
+	snprintf(buf, 10, "%d%c%c", temp, '°', 'C');
 
-  u8g2.clearBuffer();                         // Clear the internal memory
-  u8g2.enableUTF8Print();
-  u8g2.setFont(u8g2_font_mercutio_sc_nbp_tf); // Choose a suitable font
-  u8g2.drawStr((128 - u8g2.getStrWidth(desc)) / 2, 10, desc);
-  u8g2.setFont(u8g2_font_logisoso38_tf);     // Choose a suitable font
-  u8g2.drawStr((128 - u8g2.getStrWidth(buf))/2, 60, buf);
+	u8g2.clearBuffer();                         // Clear the internal memory
+	u8g2.enableUTF8Print();
+	u8g2.setFont(u8g2_font_mercutio_sc_nbp_tf); // Choose a suitable font
+	u8g2.drawStr((128 - u8g2.getStrWidth(desc)) / 2, 10, desc);
+	u8g2.setFont(u8g2_font_logisoso38_tf);     // Choose a suitable font
+	u8g2.drawStr((128 - u8g2.getStrWidth(buf))/2, 60, buf);
   
-  u8g2.sendBuffer();                          // Transfer internal memory to the display
-}
-
-/*void updateScreenIs(int16_t tipTemp, int16_t targetTemp)
-{
-  char buf[2][5];
-  snprintf (buf[0], 5, "%d", tipTemp);
-  snprintf (buf[1], 5, "%d", targetTemp);
-  
-  u8g2.clearBuffer();                         // Clear the internal memory
-  u8g2.setFont(u8g2_font_mercutio_sc_nbp_tf); // Choose a suitable font
-  
-  //u8g2.drawStr((128 - u8g2.getStrWidth("Iron temp"))/2, 10, "Iron temp");           // Write something to the internal memory
-  u8g2.drawStr(128 - u8g2.getStrWidth("Set"), 10, "Set");
-  u8g2.drawStr(0, 10, "Iron temp");
-
-  
-  u8g2.setFont(u8g2_font_logisoso28_tr   );     // Choose a suitable font
-  u8g2.drawStr(0, 60, buf[0]);
-  u8g2.drawStr(128 - u8g2.getStrWidth(buf[1]), 60, buf[1]);
-  
-  u8g2.sendBuffer();                          // Transfer internal memory to the display
+	u8g2.sendBuffer();                          // Transfer internal memory to the display
 }
 */
+
+void updateScreen(int16_t tipTemp, int16_t targetTemp)
+{
+	char buf[2][10];
+	snprintf (buf[0], 10, "%d", tipTemp);
+	snprintf (buf[1], 10, "%d", targetTemp);
+  
+	u8g2.clearBuffer();                         // Clear the internal memory
+	u8g2.enableUTF8Print();
+	u8g2.setFont(u8g2_font_helvB12_tf); // Choose a suitable font
+  
+	u8g2.drawStr(128 - u8g2.getStrWidth("Set"), 13, "Set");
+	u8g2.drawStr(0, 13, "Tip");
+
+	char tempUnit[5];
+	snprintf(tempUnit, 5, "%c%c", '°', 'C');
+
+	u8g2.drawStr((128 - u8g2.getStrWidth(tempUnit)) / 2, 13, tempUnit);
+
+	u8g2.setFont(u8g2_font_logisoso32_tf);     // Choose a suitable font
+	u8g2.drawStr(0, 55, buf[0]);
+	u8g2.setFont(u8g2_font_logisoso18_tf);
+	u8g2.drawStr(128 - u8g2.getStrWidth(buf[1]), 42, buf[1]);
+  
+	u8g2.sendBuffer();                          // Transfer internal memory to the display
+}
+
 
 
 /* ADC ISR - Read ADC-channels */
@@ -219,117 +226,93 @@ ISR(ADC_vect) // ADC Interrupt enable
 /* Zero crossing interrupt */
 ISR(INT0_vect) 
 {
-  if (PIND & (1 << GPIO_ZEROCROSSING))
-  {
-    if (mainCycles <= 0) {
-      PORTD &= ~(1 << GPIO_HEAT);
-      START_TIMER1;							//Let currents stabilize before temp-measurement
-    }
-    else {
-      if (latestIronTemp < getTargetTempToC())
-      {
-        PORTD |= (1 << GPIO_HEAT);
-        //START_TIMER2;   
-      } 
-    }
-	mainCycles--;
-  }
+	if (PIND & (1 << GPIO_ZEROCROSSING))
+	{
+		if (mainCycles <= 0) {
+			PORTD &= ~(1 << GPIO_HEAT);
+			START_TIMER1;							//Let currents stabilize before temp-measurement
+		}
+		else {
+			if (latestIronTemp < getTargetTempToC())
+			{
+				PORTD |= (1 << GPIO_HEAT);
+				//START_TIMER2;   
+			} 
+		}
+		mainCycles--;
+	}
 }
 
 
 /* Tweak the zero-crossing to trigger at the right point */
 ISR(TIMER2_COMPA_vect)
 {
-  PORTD |= (1 << GPIO_HEAT);
-  STOP_TIMER2;
+	PORTD |= (1 << GPIO_HEAT);
+	STOP_TIMER2;
 }
 
 
 /* Temp-measurement timer */
 ISR(TIMER1_COMPA_vect)
 {
-  latestIronTemp = getIronTempToC();
-  double nextMeasurement = ((double(getTargetTempToC() + KpCompensation) - double(latestIronTemp))/(double(getTargetTempToC()) + double(latestIronTemp))) * Kp;
-  mainCycles = floor(nextMeasurement);
+	latestIronTemp = getIronTempToC();
+	double nextMeasurement = ((double(getTargetTempToC() + KpCompensation) - double(latestIronTemp))/(double(getTargetTempToC()) + double(latestIronTemp))) * Kp;
+	mainCycles = floor(nextMeasurement);
 
-  STOP_TIMER1;
+	STOP_TIMER1;
 }
 
 
 /* Iron stand change interrupt */
 ISR(PCINT1_vect) //Iron stand sensor interrupt, On change
 {
-  if (PINC & (0 << GPIO_STAND))
-  {
-    ironInStand = false;
-  }
-  else
-  {
-    ironInStand = true;
-  }
+	if (PINC & (0 << GPIO_STAND))
+	{
+		ironInStand = false;
+	}
+	else
+	{
+		ironInStand = true;
+	}
 }
 
 void setup() {
-  cli();
+	cli();
 
-  /* Initialize registers and interrupts */
-  ADC_Init();
-  INT_Init();
-  TIMER1_Init();
-  TIMER2_Init();
+	/* Initialize registers and interrupts */
+	ADC_Init();
+	INT_Init();
+	TIMER1_Init();
+	TIMER2_Init();
   
-  /* Set heat pin to output */
-  DDRD |= (1 << GPIO_HEAT);
+	/* Set heat pin to output */
+	DDRD |= (1 << GPIO_HEAT);
   
-  /* Initialize display */
-  u8g2.begin();
+	/* Initialize display */
+	u8g2.begin();
 
-  /* Fill runningMedian array with current temp */
-  for (int i = 0; i < 5; i++)
-    getIronTempToC();
+	/* Fill runningMedian array with current temp */
+	for (int i = 0; i < 5; i++)
+		getIronTempToC();
   
-  sei();
+	sei();
 
 }
 
 
 
 void loop() {
-  static unsigned long screenSetCooldown = 0;
-  static uint16_t lastTipTemp = 0, lastTargetTemp = 0;
-  uint16_t tipTemp = latestIronTemp, targetTemp = getTargetTempToC();
-  static bool updateSet, lastUpdateSet = false;
-
-  if (targetTemp != lastTargetTemp)
-  {
-    screenSetCooldown = millis();
-  }
+	static uint16_t lastTipTemp = 0, lastTargetTemp = 0;
+	uint16_t tipTemp = latestIronTemp, targetTemp = getTargetTempToC();
   
-  if (millis() - screenSetCooldown >= 1000) {
-    updateSet = false;
-  }
-  else {
-    updateSet = true;
-  }
+	tipTemp = ((tipTemp+5)/5) * 5;
   
-  
-  tipTemp = ((tipTemp+5)/5) * 5;
-  
-  if (abs(tipTemp - lastTipTemp) > 0 || abs(targetTemp - lastTargetTemp > 0) || updateSet != lastUpdateSet)
-  {
-    noInterrupts();
-    if (updateSet)
-    {
-      updateScreen("Set", targetTemp);
-      lastUpdateSet = updateSet;
-    }
-    else
-    {
-      updateScreen("Iron Temp", tipTemp);
-    }
-    
-    lastTipTemp = tipTemp;
-    lastTargetTemp = targetTemp;
-    interrupts();
-  }
+	if (abs(tipTemp - lastTipTemp) > 0 || abs(targetTemp - lastTargetTemp > 0))
+	{
+		noInterrupts();
+		updateScreen(tipTemp, targetTemp);
+		lastTipTemp = tipTemp;
+		lastTargetTemp = targetTemp;
+		interrupts();
+	}
 }
